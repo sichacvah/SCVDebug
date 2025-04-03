@@ -143,12 +143,14 @@ scvString(SCVSlice s)
    memcpy((u8 *)(sl).base + i * sizeof(el), &(el), sizeof(el)); \
   } while (0)
 
-#define scvSliceAppend(sl, el)                                    \
-  do {                                                            \
-    scvAssert((sl).len < (sl).cap - 1);                           \
+#define scvSliceAppend(sl, el)                                          \
+  do {                                                                  \
+    scvAssert((sl).len < (sl).cap - 1);                                 \
     memcpy((u8 *)(sl).base + (sl).len * sizeof(el), &(el), sizeof(el)); \
+    (sl).len++;                                                         \
   } while (0)
 
+#define scvSliceGet(sl, t, i) &(((t *)(sl).base)[(i)])
 
 SCVSlice
 scvUnsafeSlice(void *buf, u64 len)
@@ -264,6 +266,7 @@ scvSlice(SCVArena *arena, u64 size, u64 len, u64 cap)
 {
   SCVSlice s;
   void *buf = scvArenaAlloc(arena, size * cap);
+  scvAssert(buf);
 
   s.base = buf;
   s.len = len;
@@ -271,7 +274,6 @@ scvSlice(SCVArena *arena, u64 size, u64 len, u64 cap)
 
   return s;
 }
-
 
 #define scvMakeSlice(arena, type, len, capacity) scvSlice((arena), sizeof(type), (len), (capacity))
 
@@ -643,6 +645,10 @@ scvMmapRealloc(void *prev, u64 prevSize, u64 size, SCVError *err)
   void *addr;
   i32  flags;
 
+  if (size == 0) {
+    return nil;
+  }
+
   if (prev == nil) {
     addr = nil;
     flags = 0;
@@ -661,7 +667,7 @@ scvArenaInit(SCVArena *arena, SCVError *err)
 {
   scvAssert(arena);
   arena->buf = scvMmapRealloc(nil, 0, 0, err);
-  arena->size = PAGE_SIZE;
+  arena->size = 0;
   arena->currOffset = 0;
   arena->prevOffset = 0;
 }
@@ -681,10 +687,11 @@ scvArenaAllocAlign(SCVArena *arena, u64 size, SCVError *err, u64 align)
 
     return ptr;
   } else {
-    arena->buf = scvMmapRealloc(arena->buf, arena->size, size, err);
+    arena->buf = scvMmapRealloc(arena->buf, arena->size, scvSizeRoundUp(size), err);
     if (!arena->buf) {
       return nil;
     }
+    arena->size += scvSizeRoundUp(size);
 
     return scvArenaAllocAlign(arena, size, err, align);
   }
@@ -710,5 +717,8 @@ scvLog(
 
 #define scvWarn(tag, msg) scvLog(tag, SCV_LOG_WARN, 0, msg, __LINE__, __FILE__)
 
+#define scvInfo(tag, msg) scvLog(tag, SCV_LOG_INFO, 0, msg, __LINE__, __FILE__)
+
+#define scvInfoID(tag, msg, id) scvLog(tag, SCV_LOG_INFO, id, msg, __LINE__, __FILE__)
 
 #endif

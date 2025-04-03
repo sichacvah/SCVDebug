@@ -26,6 +26,7 @@
 
 #define unused(a) (void)(a)
 
+
 NSOpenGLContext *context;
 bool isRunning = true;
 
@@ -102,10 +103,12 @@ windowShouldClose (void *c)
 int
 main (void)
 {
+
   @autoreleasepool {
+
   NSApp = [NSApplication sharedApplication];
   NSLog(@"NSSCreen.backingScaleFactor = %f", [NSScreen mainScreen].backingScaleFactor);
-
+  
 
   [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
   FUNC_TO_SEL("NSObject", windowShouldClose);
@@ -194,7 +197,6 @@ main (void)
   }
 }
 
-
 void 
 scvLog(
     char *tag,
@@ -205,7 +207,7 @@ scvLog(
     char* filename
 ) {
   SCVString loglvlstr;
-  u8 linebuf[512];
+  u8 linebuf[1024];
   u32 n = 0;
 
   SCVSlice s = scvUnsafeSlice(linebuf, sizeof(linebuf));
@@ -221,41 +223,41 @@ scvLog(
       loglvlstr = scvUnsafeCString("info"); break;
   }
 
-  n += scvSlicePutCString(s, "[");
-  n += scvSlicePutCString(s, tag);
-  n += scvSlicePutCString(s, "]");
+  n += scvSlicePutCString(scvSliceLeft(s, n), "[");
+  n += scvSlicePutCString(scvSliceLeft(s, n), tag);
+  n += scvSlicePutCString(scvSliceLeft(s, n), "]");
 
-  n += scvSlicePutCString(s, "[");
-  n += scvSlicePutString(s,  loglvlstr);
-  n += scvSlicePutCString(s, "]");
+  n += scvSlicePutCString(scvSliceLeft(s, n), "[");
+  n += scvSlicePutString(scvSliceLeft(s, n),  loglvlstr);
+  n += scvSlicePutCString(scvSliceLeft(s, n), "]");
 
   if (logitem > 0) {
-    n += scvSlicePutCString(s, "[id:");
-    n += scvSlicePutU64(s, (u64)logitem);
-    n += scvSlicePutCString(s, "]");
+    n += scvSlicePutCString(scvSliceLeft(s, n), "[id:");
+    n += scvSlicePutU64(scvSliceLeft(s, n), (u64)logitem);
+    n += scvSlicePutCString(scvSliceLeft(s, n), "]");
   }
 
   if (filename) {
     // gcc/clang compiler error format
-    n += scvSlicePutCString(s, " ");
-    n += scvSlicePutCString(s, filename);
-    n += scvSlicePutCString(s, ":");
-    n += scvSlicePutU64(s, line);
-    n += scvSlicePutCString(s, ":0:");
+    n += scvSlicePutCString(scvSliceLeft(s, n), " ");
+    n += scvSlicePutCString(scvSliceLeft(s, n), filename);
+    n += scvSlicePutCString(scvSliceLeft(s, n), ":");
+    n += scvSlicePutU64(scvSliceLeft(s, n), (u64)line);
+    n += scvSlicePutCString(scvSliceLeft(s, n), ":0:");
   } else {
-    n += scvSlicePutCString(s, "[line:");
-    n += scvSlicePutU64(s, line);
-    n += scvSlicePutCString(s, "]");
+    n += scvSlicePutCString(scvSliceLeft(s, n), "[line:");
+    n += scvSlicePutU64(scvSliceLeft(s, n), (u64)line);
+    n += scvSlicePutCString(scvSliceLeft(s, n), "]");
   }
 
   if (msg) {
-    n += scvSlicePutCString(s, "\n\t");
-    n += scvSlicePutCString(s, msg);    
+    n += scvSlicePutCString(scvSliceLeft(s, n), "\n\t");
+    n += scvSlicePutCString(scvSliceLeft(s, n), msg);    
   }
-  n += scvSlicePutCString(s, "\n\n");
+  n += scvSlicePutCString(scvSliceLeft(s, n), "\n\n");
 
   if (level == SCV_LOG_PANIC) {
-    n += scvSlicePutCString(s, "ABORTING because of [panic]\n");
+    n += scvSlicePutCString(scvSliceLeft(s, n), "ABORTING because of [panic]\n");
   }
   scvPrintString(scvString(scvSliceRight(s, n)));
 
@@ -263,8 +265,6 @@ scvLog(
     scvBreakpoint;
   }
 }
-
-
 
 SCVSyscallResult
 scvSyscall(uptr trap, uptr a1, uptr a2, uptr a3)

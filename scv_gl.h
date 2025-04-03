@@ -137,7 +137,7 @@ char* scvDefaultVertexShader =
   "{                                                  \n"
   "   fragTexCoord  = vertexTexCoord;                 \n"
   "   fragColor     = vertexColor;                    \n"
-  "   gl_Position   = mvp*vec4(vertexPosition, 1.0);  \n" /* TODO(sichirc): multiply with mvp */
+  "   gl_Position   = mvp*vec4(vertexPosition, 1.0);  \n" 
   "}                                                  \n";
 
 
@@ -445,7 +445,7 @@ scvGLDrawTriangle(SCVGLCtx *ctx, SCVVec2 p1, SCVVec2 p2, SCVVec2 p3, SCVColor co
 void
 scvGLFlush(SCVGLCtx *ctx)
 {
-  u32 i, ii;
+  u32 i;
   u32* indicies;
   SCVDrawCall *drawcall;
   SCVPoint origin = ctx->Viewport.origin;
@@ -470,29 +470,24 @@ scvGLFlush(SCVGLCtx *ctx)
   glBindBuffer(GL_ARRAY_BUFFER, ctx->VBO[SCV_VBO_POSITIONS]);
   glBufferSubData(GL_ARRAY_BUFFER, 0, ctx->Vertexes.index * 3 * sizeof(f32), ctx->Vertexes.positions);
 
-
   glBindBuffer(GL_ARRAY_BUFFER, ctx->VBO[SCV_VBO_TEXCOORDS]);
   glBufferSubData(GL_ARRAY_BUFFER, 0, ctx->Vertexes.index * 2 * sizeof(f32), ctx->Vertexes.texcoords);
 
   glBindBuffer(GL_ARRAY_BUFFER, ctx->VBO[SCV_VBO_COLORS]);
   glBufferSubData(GL_ARRAY_BUFFER, 0, ctx->Vertexes.index * 4 * sizeof(u8), ctx->Vertexes.colors);
 
-
   glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ctx->VBO[SCV_VBO_INDICIES]);
   glBindVertexArray(ctx->VAO);
   glUniformMatrix4fv(ctx->MVPLocation, 1, false, Proj);
 
   for (i = 0; i < ctx->Drawcalls.len; ++i) {
-    drawcall = &((SCVDrawCall *)ctx->Drawcalls.base)[i];
-    indicies = &((u32 *)ctx->Indicies.base)[drawcall->start];
+    drawcall = scvSliceGet(ctx->Drawcalls, SCVDrawCall, i);
+    indicies = scvSliceGet(ctx->Indicies, u32, drawcall->start);
     glUseProgram(drawcall->shaderID);
     glBindTexture(GL_TEXTURE_2D, drawcall->texID);
 
-    for (ii = 0; ii < drawcall->len; ++ii) {
-      glBufferSubData(GL_ELEMENT_ARRAY_BUFFER, 0, drawcall->len * sizeof(u32), indicies);
-
-      glDrawElements(GL_TRIANGLES, drawcall->len, GL_UNSIGNED_INT, (void *)0); 
-    }
+    glBufferSubData(GL_ELEMENT_ARRAY_BUFFER, 0, drawcall->len * sizeof(u32), indicies);
+    glDrawElements(GL_TRIANGLES, drawcall->len, GL_UNSIGNED_INT, (void *)0); 
   }
 
   

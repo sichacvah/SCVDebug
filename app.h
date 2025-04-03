@@ -35,7 +35,7 @@ InitContext(Context* ctx, SCVRect window, f32 scaleFactor)
 
   scvArenaInit(&ctx->arena, &error);
   scvAssert(error.tag == 0);
-  scvGLCtxInit(&ctx->arena, &ctx->GLContext, 1024, 1, window, scaleFactor);
+  scvGLCtxInit(&ctx->arena, &ctx->GLContext, 1024, 16, window, scaleFactor);
 }
 
 void
