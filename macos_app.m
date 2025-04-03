@@ -1,10 +1,28 @@
-#include "app.h"
-#include "scv.h"
+#include <sys/syscall.h>
+#include <netinet/in.h>
+#include <sys/fcntl.h>
+#include <sys/stat.h>
+#include <stdbool.h>
+#include <time.h>
+#include <sys/time.h>
+#include <sys/mman.h>
+#include <sys/types.h>
+#include <sys/event.h>
+#include <stdint.h>
+#include <math.h>
+#include <string.h>
 #include <Cocoa/Cocoa.h>
 #include <CoreVideo/CVDisplayLink.h>
-#include <OpenGL/gl3.h>
 #include <objc/runtime.h>
-#include <stdbool.h>
+#include <OpenGL/gl3.h>
+
+#define SCV_PAGE_SIZE 16384
+
+#include "scv.h"
+#include "scv_geom.h"
+#include "scv_linalg.h"
+#include "scv_gl.h"
+#include "app.h"
 
 #define unused(a) (void)(a)
 
@@ -175,3 +193,151 @@ main (void)
   return 0;
   }
 }
+
+
+void 
+scvLog(
+    char *tag,
+    enum SCVLogLevel level,
+    u32 logitem,
+    char* msg,
+    u32 line,
+    char* filename
+) {
+  SCVString loglvlstr;
+  u8 linebuf[512];
+  u32 n = 0;
+
+  SCVSlice s = scvUnsafeSlice(linebuf, sizeof(linebuf));
+
+  switch (level) {
+    case SCV_LOG_PANIC:
+      loglvlstr = scvUnsafeCString("panic"); break;
+    case SCV_LOG_ERROR:
+      loglvlstr = scvUnsafeCString("error"); break;
+    case SCV_LOG_WARN:
+      loglvlstr = scvUnsafeCString("warn"); break;
+    default:
+      loglvlstr = scvUnsafeCString("info"); break;
+  }
+
+  n += scvSlicePutCString(s, "[");
+  n += scvSlicePutCString(s, tag);
+  n += scvSlicePutCString(s, "]");
+
+  n += scvSlicePutCString(s, "[");
+  n += scvSlicePutString(s,  loglvlstr);
+  n += scvSlicePutCString(s, "]");
+
+  if (logitem > 0) {
+    n += scvSlicePutCString(s, "[id:");
+    n += scvSlicePutU64(s, (u64)logitem);
+    n += scvSlicePutCString(s, "]");
+  }
+
+  if (filename) {
+    // gcc/clang compiler error format
+    n += scvSlicePutCString(s, " ");
+    n += scvSlicePutCString(s, filename);
+    n += scvSlicePutCString(s, ":");
+    n += scvSlicePutU64(s, line);
+    n += scvSlicePutCString(s, ":0:");
+  } else {
+    n += scvSlicePutCString(s, "[line:");
+    n += scvSlicePutU64(s, line);
+    n += scvSlicePutCString(s, "]");
+  }
+
+  if (msg) {
+    n += scvSlicePutCString(s, "\n\t");
+    n += scvSlicePutCString(s, msg);    
+  }
+  n += scvSlicePutCString(s, "\n\n");
+
+  if (level == SCV_LOG_PANIC) {
+    n += scvSlicePutCString(s, "ABORTING because of [panic]\n");
+  }
+  scvPrintString(scvString(scvSliceRight(s, n)));
+
+  if (level == SCV_LOG_PANIC) {
+    scvBreakpoint;
+  }
+}
+
+
+
+SCVSyscallResult
+scvSyscall(uptr trap, uptr a1, uptr a2, uptr a3)
+{
+  SCVSyscallResult r;
+
+  __asm__ __volatile__(
+    ".align 2\n" 
+    "mov x16, %3\n"
+    "mov x0, %4\n"
+    "mov x1, %5\n"
+    "mov x2, %6\n"
+    "svc #0x80\n"
+    "bcc 0f\n"
+    "str x0, %2\n"
+    "str x1, %1\n"
+    "mov x1, #-1\n"
+    "str x1, %0\n" 
+    "b 1f\n"
+    "0:\n"
+    "str x0, %0\n"
+    "str x1, %1\n"
+    "mov x1, #0\n"
+    "str x1, %2\n"
+    "1:\n"
+    :
+    "=m" (r.r1), "=m" (r.r2), "=m" (r.err)
+    :
+    "r"(trap), "r"(a1), "r"(a2), "r"(a3)
+    :
+    "x0", "x1", "x2", "x3", "x16"
+  );
+
+  return r;
+}
+
+SCVSyscallResult
+scvSyscall6(uptr trap, uptr a1, uptr a2, uptr a3, uptr a4, uptr a5, uptr a6)
+{
+  SCVSyscallResult r;
+
+  __asm__ __volatile__(
+    ".align 2\n" 
+    "mov x16, %x3\n"
+    "mov x0, %4\n"
+    "mov x1, %5\n"
+    "mov x2, %6\n"
+    "mov x3, %7\n"
+    "mov x4, %8\n"
+    "mov x5, %9\n"
+    "svc #0x80\n"
+    "bcc 0f\n"
+    "str x0, %2\n"
+    "str x1, %1\n"
+    "mov x1, #-1\n"
+    "str x1, %0\n" 
+    "b 1f\n"
+    "0:\n"
+    "str x0, %0\n"
+    "str x1, %1\n"
+    "mov x1, #0\n"
+    "str x1, %2\n"
+    "1:\n"
+    :
+    "=m"(r.r1), "=m"(r.r2), "=m"(r.err)
+    :
+    "r"(trap), "r"(a1), "r"(a2), "r"(a3), "r"(a4), "r"(a5), "r"(a6)
+    :
+    "x0", "x1", "x2", "x3", "x4", "x5", "x16"
+  );
+
+  return r;
+}
+
+
+

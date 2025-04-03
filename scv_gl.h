@@ -1,10 +1,17 @@
 #ifndef SCV_GL
 #define SCV_GL
-#include <OpenGL/gl3.h>
 
-#include "scv.h"
-#include "scv_linalg.h"
-#include "scv_geom.h"
+/**
+ * headers needed:
+ *
+ * scv.h
+ * scv_linalg.h
+ * scv_geom.h
+ *
+ * on apple particular:
+ *  <OpenGL/gl3.h>
+ *
+ */
 
 // NOTE: Support depends on OpenGL version
 // only 3.3 core for now
