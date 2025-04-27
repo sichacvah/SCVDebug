@@ -23,6 +23,25 @@ typedef enum
   SCV_PIXELFORMAT_UNCOMPRESSED_R8G8B8A8,      // 32 bpp
 } SCVPixelFormat;
 
+
+typedef struct SCVImage SCVImage;
+struct SCVImage {
+  void *data;
+  u32 width;
+  u32 height;
+  u32 pitch;
+  SCVPixelFormat pixelformat;
+  i32 mipmapcount;
+};
+
+typedef struct SCVTexture SCVTexture;
+struct SCVTexture {
+  u32 glTexID;
+  f32 width;
+  u32 height;
+  u32 pitch;
+};
+
 enum SCVVBOs {
   SCV_VBO_POSITIONS = 0,
   SCV_VBO_TEXCOORDS,
@@ -56,11 +75,36 @@ struct SCVDrawCall {
   u32 shaderID;
 };
 
+typedef struct SCVGlyph SCVGlyph;
+struct SCVGlyph {
+  rune  codepoint;
+  i32   index;
+  i32   width;
+  i32   xoffset;
+  i32   yoffset;
+  i32   height;
+  i32   xadvance;
+  i32   lsb; // left side bearing
+  i32   tx; // offset inside texture x
+  i32   ty; // offset inside texture y
+};
+
+typedef struct SCVFont SCVFont;
+struct SCVFont {
+  SCVTexture *texture;  
+  SCVSlice   glyphs;
+  f32        size;
+  f32        scale;
+  i32        ascent;
+  i32        descent;
+  i32        linegap;
+};
+
 typedef struct SCVGLCtx SCVGLCtx;
 struct SCVGLCtx {
   SCVSlice      Drawcalls;
   u32           VAO;
-  u32           DefaultTexuteId;
+  u32           DefaultTextureId;
   i32           PositionLocation;
   i32           TexcoordsLocation;
   i32           ColorLocation;
@@ -70,14 +114,26 @@ struct SCVGLCtx {
   SCVVertexes   Vertexes;
   SCVSlice      Indicies;
   SCVRect       Viewport;
+  SCVPool       Textures;
+  SCVPool       Fonts;
   f32           Scale;
 };
+
+typedef struct SCVText SCVText;
+struct SCVText {
+  SCVPoint  point;
+  SCVString str;
+  SCVString font;
+  f32       fontSize;
+};
+
+
 
 #define SCV_ERROR_SHADER_COMPILE 1
 #define SCV_ERROR_SHADER_LINK 2
 
 void scvGLFlush(SCVGLCtx *ctx);
-u32 scvGLLoadTexture(byte* data, i32 width, i32 height, i32 format, i32 mipmapcount);
+u32 scvGLLoadTexture(SCVImage image);
 void scvGLPushIndex(SCVGLCtx *ctx, u32 indx);
 
 u32
@@ -181,43 +237,69 @@ scvGLBuildDefaultShaders(void)
   return result;  
 }
 
+typedef struct SCVGLCtxDesc SCVGLCtxDesc;
+struct SCVGLCtxDesc {
+  SCVRect viewport;
+  SCVArena *arena; 
+  u32 vertexescount;
+  u32 drawcalls;
+  u32 texturescount;
+  u32 fontscount;
+  f32 scaleFactor;
+};
+
 void
-scvGLCtxInit(
-    SCVArena *arena,
-    SCVGLCtx *ctx, 
-    u32 vertexescount, 
-    u32 drawcalls,
-    SCVRect viewport,
-    f32 scaleFactor)
+scvGLCtxDescDefault(SCVGLCtxDesc *desc) {
+  scvAssert(desc);
+  scvAssert(desc->arena);
+  scvAssert(desc->scaleFactor > 0);
+
+  desc->vertexescount = desc->vertexescount == 0 ? 1024 : desc->vertexescount;
+  desc->drawcalls     = desc->drawcalls     == 0 ? 16   : desc->drawcalls;
+  desc->texturescount = desc->texturescount == 0 ? 256  : desc->texturescount;
+  desc->fontscount    = desc->fontscount    == 0 ? 128  : desc->fontscount;
+}
+
+void
+scvGLCtxInit(SCVGLCtx *ctx, SCVGLCtxDesc *desc)
 {
+  SCVArena *arena;
   u32 indiceslen;
   u32 texcoordslen;
   u32 positionslen;
   u32 colorslen;
-  u8  whitpixels[4] = { 255, 255, 255, 255 };
-  scvAssert(ctx);
-  scvAssert(arena);
+  SCVSlice texturesMem;
+  SCVSlice fontsMem;
+  SCVImage defaultTextureImg = {0};
+  u8 whitepixels[4] = { 255, 255, 255, 255 };
+  scvGLCtxDescDefault(desc);
 
-  indiceslen    = sizeof(u32) * vertexescount * 2;
-  texcoordslen  = sizeof(f32) * vertexescount * 2;
-  positionslen  = sizeof(f32) * vertexescount * 3;
-  colorslen     = sizeof(u8)  * vertexescount * 4;
+  arena = desc->arena;
+  indiceslen    = sizeof(u32) * desc->vertexescount * 2;
+  texcoordslen  = sizeof(f32) * desc->vertexescount * 2;
+  positionslen  = sizeof(f32) * desc->vertexescount * 3;
+  colorslen     = sizeof(u8)  * desc->vertexescount * 4;
  
-  viewport.origin.x *= scaleFactor;
-  viewport.origin.y *= scaleFactor;
-  viewport.size.width *= scaleFactor;
-  viewport.size.height *= scaleFactor;
-  ctx->Viewport = viewport;
+  desc->viewport.origin.x *= desc->scaleFactor;
+  desc->viewport.origin.y *= desc->scaleFactor;
+  desc->viewport.size.width *= desc->scaleFactor;
+  desc->viewport.size.height *= desc->scaleFactor;
+  ctx->Viewport = desc->viewport;
   
-  ctx->Scale = scaleFactor;
+  ctx->Scale = desc->scaleFactor;
 
-  ctx->DefaultTexuteId = scvGLLoadTexture(whitpixels, 1, 1, SCV_PIXELFORMAT_UNCOMPRESSED_R8G8B8A8, 1);
+  defaultTextureImg.data = whitepixels;
+  defaultTextureImg.width = 1;
+  defaultTextureImg.height = 1;
+  defaultTextureImg.pixelformat = SCV_PIXELFORMAT_UNCOMPRESSED_R8G8B8A8;
+  defaultTextureImg.mipmapcount = 1;
+  ctx->DefaultTextureId = scvGLLoadTexture(defaultTextureImg);
 
   glGenVertexArrays(1, &ctx->VAO); 
-  ctx->Drawcalls = scvMakeSlice(arena, SCVDrawCall, 0, drawcalls);
+  ctx->Drawcalls = scvMakeSlice(arena, SCVDrawCall, 0, desc->drawcalls);
   scvAssert(ctx->Drawcalls.base);
 
-  ctx->Vertexes.size      = vertexescount;
+  ctx->Vertexes.size      = desc->vertexescount;
   ctx->Vertexes.texcoords = (f32 *)scvArenaAlloc(arena, (u64)texcoordslen);
   scvAssert(ctx->Vertexes.texcoords);
   ctx->Vertexes.positions = (f32 *)scvArenaAlloc(arena, (u64)positionslen);
@@ -226,6 +308,13 @@ scvGLCtxInit(
   scvAssert(ctx->Vertexes.colors);
   ctx->Indicies           = scvMakeSlice(arena, u32, 0, indiceslen);
   scvAssert(ctx->Indicies.base);
+  texturesMem             = scvMakeSlice(arena, SCVTexture, 0, desc->texturescount);
+  scvPoolInitDefault(&ctx->Textures, texturesMem, sizeof(SCVTexture));
+  scvAssert(ctx->Textures.buf);
+
+  fontsMem = scvMakeSlice(arena, SCVFont, 0, desc->fontscount);
+  scvPoolInitDefault(&ctx->Fonts, fontsMem, sizeof(SCVFont));
+  scvAssert(ctx->Fonts.buf);
 
   glBindVertexArray(ctx->VAO);
   glGenBuffers(SCV_VBO_LENGTH, ctx->VBO);
@@ -272,7 +361,7 @@ scvGLBegin(SCVGLCtx *ctx)
   scvSliceAppend(ctx->Drawcalls, ((SCVDrawCall){
       .start    = 0,
       .len      = 0,
-      .texID    = ctx->DefaultTexuteId,
+      .texID    = ctx->DefaultTextureId,
       .shaderID = ctx->DefaultShader,
   }));
 }
@@ -324,9 +413,17 @@ scvGLPushVertex(SCVGLCtx *ctx, SCVVertex *vertex)
   return index;
 }
 
+typedef struct SCVUVRect SCVUVRect;
+struct SCVUVRect {
+  SCVVec2 topleft;
+  SCVVec2 topright;
+  SCVVec2 bottomleft;
+  SCVVec2 bottomright;
+};
+
 
 void
-scvGLDrawRectInternal(SCVGLCtx *ctx, SCVRect rect, SCVColor color)
+scvGLDrawRectInternal(SCVGLCtx *ctx, SCVRect rect, SCVColor color, SCVUVRect *uvs)
 {
   u32 i1, i2, i3, i4;
   f32 x, y, width, height;
@@ -344,6 +441,8 @@ scvGLDrawRectInternal(SCVGLCtx *ctx, SCVRect rect, SCVColor color)
   vertex.position[2] = 1.0f;
   vertex.position[0] = x;
   vertex.position[1] = y;
+  vertex.texcoord[0] = uvs ? uvs->topleft[0] : 0.0f;
+  vertex.texcoord[1] = uvs ? uvs->topleft[1] : 0.0f;
   vertex.color       = color;
 
   // topleft
@@ -352,6 +451,8 @@ scvGLDrawRectInternal(SCVGLCtx *ctx, SCVRect rect, SCVColor color)
   vertex.position[0] = x + width;
   vertex.position[1] = y;
   vertex.color       = color;
+  vertex.texcoord[0] = uvs ? uvs->topright[0] : 1.0f;
+  vertex.texcoord[1] = uvs ? uvs->topright[1] : 0.0f;
 
   // topright
   i2 = scvGLPushVertex(ctx, &vertex);
@@ -359,6 +460,8 @@ scvGLDrawRectInternal(SCVGLCtx *ctx, SCVRect rect, SCVColor color)
   vertex.position[0] = x + width;
   vertex.position[1] = y + height;
   vertex.color       = color;
+  vertex.texcoord[0] = uvs ? uvs->bottomright[0] : 1.0f;
+  vertex.texcoord[1] = uvs ? uvs->bottomright[1] : 1.0f;
 
   // bottomright
   i3 = scvGLPushVertex(ctx, &vertex);
@@ -366,6 +469,8 @@ scvGLDrawRectInternal(SCVGLCtx *ctx, SCVRect rect, SCVColor color)
   vertex.position[0] = x;
   vertex.position[1] = y + height;
   vertex.color       = color;
+  vertex.texcoord[0] = uvs ? uvs->bottomleft[0] : 0.0f;
+  vertex.texcoord[1] = uvs ? uvs->bottomleft[1] : 1.0f;
 
   // bottomleft
   i4 = scvGLPushVertex(ctx, &vertex);
@@ -391,9 +496,9 @@ scvGLDrawImage(SCVGLCtx *ctx, SCVRect rect, SCVColor color, u32 texID)
     drawcall.shaderID = ctx->DefaultShader;
     drawcall.texID = texID;
     scvSliceAppend(ctx->Drawcalls, drawcall);
-  } 
+  }
 
-  scvGLDrawRectInternal(ctx, rect, color);
+  scvGLDrawRectInternal(ctx, rect, color, nil);
 }
 
 void
@@ -401,15 +506,15 @@ scvGLDrawRect(SCVGLCtx *ctx, SCVRect rect, SCVColor color)
 { 
   SCVDrawCall drawcall = {0};
   SCVDrawCall currentDrawCall = ((SCVDrawCall *)ctx->Drawcalls.base)[ctx->Drawcalls.len - 1];
-  if (currentDrawCall.texID != ctx->DefaultTexuteId) {
+  if (currentDrawCall.texID != ctx->DefaultTextureId) {
     drawcall.start = ctx->Indicies.len;
     drawcall.len   = 0;
     drawcall.shaderID = ctx->DefaultShader;
-    drawcall.texID = ctx->DefaultTexuteId;
+    drawcall.texID = ctx->DefaultTextureId;
     scvSliceAppend(ctx->Drawcalls, drawcall);
   }
 
-  scvGLDrawRectInternal(ctx, rect, color);
+  scvGLDrawRectInternal(ctx, rect, color, nil);
 }
 
 void
@@ -463,9 +568,12 @@ scvGLFlush(SCVGLCtx *ctx)
   };
 
   glViewport((u32)origin.x, (u32)origin.y, (u32)size.width, (u32)size.height);
+  glEnable(GL_BLEND); 
+  glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+  glBlendEquation(GL_FUNC_ADD);
   glUseProgram(ctx->DefaultShader);
   glActiveTexture(GL_TEXTURE0);
-  glBindTexture(GL_TEXTURE_2D, ctx->DefaultTexuteId);
+  glBindTexture(GL_TEXTURE_2D, ctx->DefaultTextureId);
 
   glBindBuffer(GL_ARRAY_BUFFER, ctx->VBO[SCV_VBO_POSITIONS]);
   glBufferSubData(GL_ARRAY_BUFFER, 0, ctx->Vertexes.index * 3 * sizeof(f32), ctx->Vertexes.positions);
@@ -484,6 +592,7 @@ scvGLFlush(SCVGLCtx *ctx)
     drawcall = scvSliceGet(ctx->Drawcalls, SCVDrawCall, i);
     indicies = scvSliceGet(ctx->Indicies, u32, drawcall->start);
     glUseProgram(drawcall->shaderID);
+    glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, drawcall->texID);
 
     glBufferSubData(GL_ELEMENT_ARRAY_BUFFER, 0, drawcall->len * sizeof(u32), indicies);
@@ -577,17 +686,28 @@ scvGLBindTexture(u32 id)
 }
 
 u32
-scvGLLoadTexture(byte* data, i32 width, i32 height, i32 format, i32 mipmapcount)
+scvGLLoadTexture(SCVImage image)
 {
+  byte* data;
+  i32 width, height, format, mipmapcount;
   i32 i, mipWidth, mipSize, mipHeight;
   u32 id, glInternalFormat, glFormat, glType;
   i32 swizzlemap[4];
 
   id = 0;
+
+  glActiveTexture(GL_TEXTURE0);
   glBindTexture(GL_TEXTURE_2D, 0);
+
+  glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
   glGenTextures(1, &id);
   glBindTexture(GL_TEXTURE_2D, id);
-  glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+  data = image.data;
+  width = image.width;
+  height = image.height;
+  format = image.pixelformat;
+  mipmapcount = image.mipmapcount;
+
   mipWidth = width;
   mipHeight = height;
 
@@ -596,6 +716,7 @@ scvGLLoadTexture(byte* data, i32 width, i32 height, i32 format, i32 mipmapcount)
   if (glInternalFormat != 0) {
     for (i = 0; i < mipmapcount; ++i) {
       mipSize = scvGetPixelDataSize(mipWidth, mipHeight, format);
+      glGenerateMipmap(GL_TEXTURE_2D);
       glTexImage2D(GL_TEXTURE_2D, i, glInternalFormat, mipWidth, mipHeight, 0, glFormat, glType, data);
       if (format == SCV_PIXELFORMAT_UNCOMPRESSED_GRAYSCALE) {
         swizzlemap[0] = GL_RED;
@@ -622,10 +743,10 @@ scvGLLoadTexture(byte* data, i32 width, i32 height, i32 format, i32 mipmapcount)
     }
   }
 
-  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);       // Set texture to repeat on x-axis
-  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
-  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);  // Alternative: GL_LINEAR
-  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+  glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);	
+  glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE); 
 
   if (mipmapcount > 1) {
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
@@ -642,5 +763,339 @@ scvGLLoadTexture(byte* data, i32 width, i32 height, i32 format, i32 mipmapcount)
   return id;
 }
 
+SCVImage
+scvImage(SCVArena *arena, u32 width, u32 height)
+{
+  SCVError error = {0};
+  SCVImage result = {0};
 
+  result.pitch = 4 * width;
+  result.mipmapcount = 1;
+  result.pixelformat = SCV_PIXELFORMAT_UNCOMPRESSED_R8G8B8A8;
+  result.data = scvArenaAllocErr(arena, result.pitch * height, &error);
+  if (error.tag) {
+    scvFatalError("can't alloc memory", &error);
+  }
+  memset(result.data, 0, result.pitch * height);
+  result.width = width;
+  result.height = height;
+
+  return result;
+}
+
+SCVTexture*
+scvLoadTexture(SCVGLCtx *ctx, SCVImage image)
+{
+  SCVTexture* tex = (SCVTexture *)scvPoolAlloc(&ctx->Textures);
+ 
+  tex->glTexID = scvGLLoadTexture(image);
+  tex->width = image.width;
+  tex->height = image.height;
+  tex->pitch = image.pitch;
+
+  return tex;
+}
+
+#define JA 1103 // я
+#define CA 1040 // А - cyrillic 
+#define CPLEN (95 + JA - CA)
+
+
+typedef struct SCVFontDesc SCVFontDesc;
+struct SCVFontDesc {
+  f32       fontsize;
+  SCVString fontpath; 
+};
+
+i32 codepointsbuffer[CPLEN];
+
+SCVFont*
+scvFontInit(SCVGLCtx *ctx, SCVArena *arena, SCVFontDesc *desc)
+{
+  SCVFont *font;
+  f32 fontSize = desc->fontsize;
+  stbtt_fontinfo fontInfo = {0};
+  SCVError error = {0};
+  SCVSlice fontData = scvLoadFile(desc->fontpath, &error);
+  scvAssert(error.tag == 0);
+
+  font = scvPoolAlloc(&ctx->Fonts);
+
+  SCVSlice codepoints = scvUnsafeSlice(codepointsbuffer, CPLEN);
+
+  // TODO(sichirc): figure out is it need to delete font, and if we need to do it
+  // need to know how to allocate glyphs and release them.
+  font->glyphs = scvMakeSlice(arena, SCVGlyph, codepoints.len, codepoints.len);
+  SCVGlyph *glyphs = (SCVGlyph *)font->glyphs.base;
+
+  for (u64 i = 0; i < codepoints.len; ++i) {
+    ((rune *)codepoints.base)[i] = (i < 95) ? (i32)i + 32 : (i32)i + CA - 95;
+  }
+
+  stbtt_InitFont(&fontInfo, (unsigned char *)fontData.base, 0);
+  f32 scale = stbtt_ScaleForPixelHeight(&fontInfo, fontSize);
+
+  stbtt_GetFontVMetrics(&fontInfo, &font->ascent, &font->descent, &font->linegap);
+  font->scale = scale;
+  font->size = desc->fontsize;
+
+  i32 width = 0;
+  i32 height = 0;
+  rune *cp = (rune *)codepoints.base;
+  i32 x1, x2, y1, y2;
+  i32 padding = 2;
+
+  for (u64 i = 0; i < codepoints.len; ++i) {
+    stbtt_GetCodepointBitmapBox(&fontInfo, cp[i], scale, scale, &x1, &y1, &x2, &y2);
+    glyphs[i].width = (x2 - x1);
+    glyphs[i].height = (y2 - y1);
+    width += (glyphs[i].width + padding);
+    height = scvMax(height, glyphs[i].height);
+    stbtt_GetCodepointHMetrics(&fontInfo, cp[i], &glyphs[i].xadvance, &glyphs[i].lsb);
+    glyphs[i].xadvance = (i32)(scale * (f32)glyphs[i].xadvance);
+  }
+
+  height += padding;
+
+
+  // packing 
+  // NOTE(sichirc): for know simplest packing just in one very wide texture
+  // where width is sum of glyphs width and height is height of tallest glyphs
+  SCVImage bitmapImage = scvImage(arena, (u32)width, (u32)height);
+  SCVGlyph *g; 
+  u32 offset = 0;
+  i32 tx = 0;
+  i32 ty = 0;
+
+  for (u64 i = 0; i < codepoints.len; ++i) {
+    rune cp = ((rune *)codepoints.base)[i];
+    g = glyphs + i;
+    g->tx = tx;
+    g->ty = ty;
+    g->codepoint = cp;
+    u8 *bitmap = (u8 *)stbtt_GetCodepointBitmap(
+        &fontInfo,
+        scale,
+        scale,
+        cp,
+        nil,
+        nil,
+        &g->xoffset,
+        &g->yoffset
+    );
+    u8 *source = bitmap; 
+    byte *destRow = (byte *)bitmapImage.data + offset;
+    for (i32 y = 0; y < g->height; ++y) {
+      u32 *dest = (u32 *)destRow;
+      for (i32 x = 0; x < g->width; ++x) {
+        u8 alpha = *source++; 
+        *dest++ = ((alpha << 24) | (alpha << 16) | (alpha << 8) | (alpha << 0));
+      }
+      destRow += bitmapImage.pitch;
+    } 
+    offset += (g->width * 4 + padding * 4);
+    stbtt_FreeBitmap(bitmap, nil);
+    tx += (g->width + padding);
+  }
+
+  font->texture = scvLoadTexture(ctx, bitmapImage);
+
+  scvUnloadFile(fontData);
+
+  return font;
+}
+
+u64
+scvFindGlyph(SCVFont *font, rune codepoint)
+{
+  u64 result = 0;
+  SCVGlyph* glyphs = (SCVGlyph *)font->glyphs.base;
+  for (u64 i = 0; i < font->glyphs.len; ++i) {
+    if (glyphs[i].codepoint == codepoint) {
+      result = i;
+      break;
+    }
+  }
+
+  return result;
+}
+
+void
+scvBindTexture(SCVGLCtx *ctx, SCVTexture *texture)
+{
+  SCVDrawCall drawcall = {0};
+  scvAssert(ctx);
+  scvAssert(texture);
+  SCVDrawCall currentDrawCall = ((SCVDrawCall *)ctx->Drawcalls.base)[ctx->Drawcalls.len - 1];
+  if (currentDrawCall.texID != texture->glTexID) {
+    drawcall.start = ctx->Indicies.len;
+    drawcall.len   = 0;
+    drawcall.shaderID = ctx->DefaultShader;
+    drawcall.texID = texture->glTexID;
+    scvSliceAppend(ctx->Drawcalls, drawcall);
+  }
+}
+
+SCVSize
+scvMeasureText(SCVFont *font, SCVString text)
+{
+  SCVSize size = {0};
+  SCVGlyph *glyph = nil;
+  i32 glyphIndex = 0;
+  rune r = 0;
+  SCVError error = {0};
+  SCVUTF8Iterator iterator = scvUTF8Iterator(text);
+
+  size.height = font->size;
+  while (scvUTF8HasNext(&iterator)) {
+    r = scvUTF8GetNext(&iterator, &error);
+    if (error.tag) {
+      scvFatalError("not valid utf8", &error);
+    }
+    glyphIndex = scvFindGlyph(font, r);
+    glyph = (SCVGlyph *)font->glyphs.base + glyphIndex;
+    size.width += ((f32)glyph->xoffset + (f32)glyph->width);
+  }
+
+  return size;
+}
+
+#define roundf(n) (f32)((i32)(n))
+
+
+void
+scvDrawText(SCVGLCtx *ctx, SCVColor color, SCVFont *font, SCVPoint origin, SCVString text)
+{
+
+  SCVGlyph *glyph;
+  SCVTexture *texture;
+  u64 glyphIndex = 0;
+  f32 baseline = 0.0f;
+  rune r = 0;
+  SCVError error = {0};
+  SCVUTF8Iterator iterator = scvUTF8Iterator(text);
+  SCVRect rect = {0};
+  SCVUVRect uvrect = {0};
+
+  texture = font->texture;
+  rect.origin = origin;
+
+  baseline = origin.y + (f32)font->ascent * (f32)font->scale;
+
+  scvBindTexture(ctx, texture);
+
+  while (scvUTF8HasNext(&iterator)) {
+    r = scvUTF8GetNext(&iterator, &error);
+
+    if (error.tag) {
+      scvFatalError("not valid utf8", &error);
+    }
+
+    glyphIndex = scvFindGlyph(font, r);
+    glyph = (SCVGlyph *)font->glyphs.base + glyphIndex;
+    rect.origin.y = roundf(baseline + glyph->yoffset);
+
+    rect.size.width = (f32)glyph->width;
+    rect.size.height = (f32)glyph->height;
+
+    uvrect.topleft[0] = ((f32)glyph->tx / (f32)texture->width); 
+    uvrect.topleft[1] = ((f32)glyph->ty / (f32)texture->height);
+
+    uvrect.topright[0] = ((f32)(glyph->tx + glyph->width) / (f32)texture->width);
+    uvrect.topright[1] = ((f32)glyph->ty / (f32)texture->height);
+
+    uvrect.bottomleft[0] = ((f32)glyph->tx / (f32)texture->width);
+    uvrect.bottomleft[1] = ((f32)(glyph->ty + glyph->height) / (f32)texture->height);
+
+    uvrect.bottomright[0] = ((f32)(glyph->tx + glyph->width) / (f32)texture->width);
+    uvrect.bottomright[1] = ((f32)glyph->height / (f32)texture->height); 
+
+    scvGLDrawRectInternal(ctx, rect, color, &uvrect);
+    rect.origin.x += (f32)glyph->xoffset + (f32)glyph->xadvance;
+  }
+
+}
+
+
+/*
+void
+scvFontInit(SCVArena *arena, SCVFont *font, SCVSlice codepoints, SCVError  *error)
+{
+  i32 defaultCpsLen;
+  SCVImage image = {0};
+  if (codepoints.len == 0) {
+    // all latins + cyrillic symbols (russian subset)
+    defaultCpsLen = 95 + JA - CA;
+    codepoints = scvMakeSlice(arena, rune, defaultCpsLen, defaultCpsLen);
+    for (i32 i = 0; i < 95; ++i) {
+      (rune *)codepoints.base[i] = i + 32;
+    }
+    for (i32 i = A; i <= JA; ++i) {
+      (rune *)codepoints.base[i] = i;
+    }
+  }
+  rune *cp = (rune *)codepoints.base;
+  SCVSlice glyphsSlice = scvMakeSlice(arena, SCVGlyph, codepoints.len, codepoints.len);
+  SCVGlyph *glyphs = (SCVGlyph *)glyphsSlice.base;
+  u32 texturewidth = 0;
+  u32 textureheight = 0;
+
+  byte* textureBuffer = scvArenaAlloc(arena, PAGE_SIZE);
+  u64   textureBufferSize = PAGE_SIZE;
+  i32   byteoffset = 0;
+
+  if (stbtt_InitFont(&fontInfo, (unsigned char *)fileData, 0)) {
+     
+    // FONT_INFO
+    font->scale = stbtt_ScaleForPixelHeight(&fontInfo, (f32)fontSize);
+    stbtt_GetFontVMetrics(&)
+    
+    for (i32 i = 0; i < codepoints.len; ++i) {
+      rune ch = cp[i];
+      glyphs[i].codepoint = ch;
+      i32 index = stbtt_FindGlyphIndex(&fontInfo, ch);
+      if (index <= 0) {
+        index = stbtt_ScaleForPixelHeight(&fontInfo, 0x0000FFFD);
+        scvAssert(indx > 0);
+      }
+      glyphs[i].index = index;
+
+
+      glyphBuffer = stbtt_GetGlyphBitmap(
+          &fontInfo,
+          font->scale,
+          font->scale,
+          glyphs[i].index,
+          &glyphs[i].width,
+          &glyphs[i].height,
+          &glyphs[i].xoff,
+          &glyphs[i].yoff
+      );
+
+      byteoffset += width 
+
+
+      stbtt_FreeBitmap(glyphBuffer, nil);
+
+      stbtt_GetCodepointHMetrics(&fontInfo, index, &glyphs[i].advanceWith, &glyphs[i].leftSideBearing);
+
+      u64 datasize = glyphs[i].width * glyphs[i].height * 4;
+      texturewidth += glyphs[i].width;
+      textureheight = scvMax(textureheight, glyphs[i].height);
+    } 
+
+
+  } else {
+    scvErrorSet(error, "failed to initialize font", 1);
+  }
+
+}
+
+void
+scvRenderText(SCVGLCtx *ctx, SCVText *text)
+{
+  
+}
+
+*/
 #endif

@@ -21,7 +21,7 @@ case $1 in
   'build')
     rm -fr $BUNDLE
     mkdir $BUNDLE
-    clang -o "$BUNDLE/$PROJECT" -g -O0 $OBJCFLAGS  $FRAMEWORKS $LDFLAGS  $SRC -ferror-limit=0
+    clang -o "$BUNDLE/$PROJECT" -g -O0 $OBJCFLAGS  $FRAMEWORKS $LDFLAGS  $SRC
     ;;
   'fmt')
       for file in $SRC_FILES; do

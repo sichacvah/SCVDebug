@@ -16,6 +16,11 @@
 #include <objc/runtime.h>
 #include <OpenGL/gl3.h>
 
+#define STB_IMAGE_IMPLEMENTATION
+#include "external/stb_image.h"
+#define STB_TRUETYPE_IMPLEMENTATION
+#include "external/stb_truetype.h"
+
 #define SCV_PAGE_SIZE 16384
 
 #include "scv.h"

@@ -31,6 +31,11 @@ typedef double	f64;
 
 typedef uintptr_t	uptr;
 
+enum SCVErrorType {
+  SCV_UTF8_INCORRECT_ENDCODING,
+  SCV_UTF8_SURROGATE_HALF_FOUND,
+};
+
 #define scvBreakpoint __builtin_debugtrap()
 #define scvMin(a, b) ((a) < (b) ? (a) : (b))
 #define scvMax(a, b) ((a) > (b) ? (a) : (b))
@@ -55,6 +60,7 @@ typedef struct SCVString SCVString;
 typedef struct SCVSlice  SCVSlice;
 typedef struct SCVArena SCVArena;
 
+void scvPrintU64(u64 x);
 void scvAssertFail(char *expr, char *file, int line);
 i64 scvWrite(int fd, void *ptr, u64 size, SCVError *error);
 void* scvArenaAllocAlign(SCVArena *arena, u64 size, SCVError *err, u64 align);
@@ -345,13 +351,15 @@ scvGetTimeofday(struct timeval *tv, SCVError *err)
 i32
 scvOpenat(i32 dirfd, SCVString pathname, i32 flags, mode_t mode, SCVError *err)
 {
-  scvAssert(pathname.base[pathname.len-1] == '0');
+  scvAssert(pathname.base[pathname.len] == 0);
   SCVSyscallResult r = scvSyscall6(SYS_openat, (uptr)dirfd, (uptr)pathname.base, (uptr)flags, (uptr)mode, 0, 0);
   scvErrorSet(err, "could not open file with code", r.err);
   return r.r1;
 }
 
-#define scvOpen(pathname, flags, error) scvOpenAt(AT_FDCWD, pathname, flags, (mode_t)0, error)
+#define scvOpen(pathname, flags, error) scvOpenat(AT_FDCWD, pathname, flags, (mode_t)0, error)
+
+#define scvOpenCString(pathnamecstring, flags, error) scvOpen(scvUnsafeCString(pathnamecstring), flags, error)
 
 void
 scvFStat(i32 fd, struct stat *s, SCVError *err)
@@ -367,6 +375,19 @@ scvMmap(void *addr, u64 len, i32 prot, i32 flags, i32 fd, i64 offset, SCVError *
   scvErrorSet(error, "mmap failed with code", r.err);
 
   return (void *)r.r1;
+}
+
+void
+scvMunmap(void *addr, u64 len, SCVError *error)
+{
+  SCVSyscallResult r = scvSyscall(SYS_munmap, (uptr)addr, (uptr)len, 0);
+  scvErrorSet(error, "mmap failed with code", r.err);
+}
+
+void
+scvSliceMunmap(SCVSlice s)
+{
+  scvMunmap(s.base, s.len, nil);
 }
 
 // printing
@@ -657,16 +678,15 @@ scvMmapRealloc(void *prev, u64 prevSize, u64 size, SCVError *err)
     flags = MAP_FIXED;
   }
 
-  size = scvSizeRoundUp(size);
-
   return scvMmap(addr, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON | flags, -1, 0, err);
 }
 
 void
 scvArenaInit(SCVArena *arena, SCVError *err)
 {
+  (void)err;
   scvAssert(arena);
-  arena->buf = scvMmapRealloc(nil, 0, 0, err);
+  arena->buf = nil;
   arena->size = 0;
   arena->currOffset = 0;
   arena->prevOffset = 0;
@@ -679,22 +699,23 @@ scvArenaAllocAlign(SCVArena *arena, u64 size, SCVError *err, u64 align)
   uptr offset  = scvAlignForward(currPtr, align);
   offset -= (uptr)arena->buf;
 
-  if (offset + size <= arena->size) {
-    void *ptr = &arena->buf[offset];
-    arena->prevOffset = offset;
-    arena->currOffset = offset + size;
-    memset(ptr, 0, size);
-
-    return ptr;
-  } else {
-    arena->buf = scvMmapRealloc(arena->buf, arena->size, scvSizeRoundUp(size), err);
-    if (!arena->buf) {
+  if (offset + size > arena->size) {
+    void *next = scvMmapRealloc(arena->buf, arena->size, scvSizeRoundUp(size), err);
+    if (!next) {
       return nil;
     }
+    if (arena->buf == nil) {
+      arena->buf = next;
+    }
     arena->size += scvSizeRoundUp(size);
-
-    return scvArenaAllocAlign(arena, size, err, align);
   }
+
+  void *ptr = &arena->buf[offset];
+  arena->prevOffset = offset;
+  arena->currOffset = offset + size;
+  memset(ptr, 0, size);
+
+  return ptr;
 }
 
 enum SCVLogLevel {
@@ -720,5 +741,206 @@ scvLog(
 #define scvInfo(tag, msg) scvLog(tag, SCV_LOG_INFO, 0, msg, __LINE__, __FILE__)
 
 #define scvInfoID(tag, msg, id) scvLog(tag, SCV_LOG_INFO, id, msg, __LINE__, __FILE__)
+
+
+// files
+
+SCVSlice
+scvLoadFile(SCVString pathname, SCVError *error)
+{ 
+  i64 fd;
+  void *buf;
+  SCVSlice s = {0};
+  struct stat filestat = {0};
+  fd = scvOpen(pathname, 0, error);
+  if (fd < 0) {
+    return s;
+  } 
+
+  scvFStat(fd, &filestat, error);
+
+  if (filestat.st_size == 0) {
+    return s;
+  }
+
+  buf = scvMmap(nil, filestat.st_size, PROT_READ | PROT_WRITE, MAP_FILE, fd, 0, error);
+
+  if (buf == 0) {
+    return s;
+  }
+
+  return scvUnsafeSlice(buf, filestat.st_size);
+}
+
+void
+scvUnloadFile(SCVSlice sl)
+{
+  scvSliceMunmap(sl);
+}
+
+// pool allocator
+
+typedef struct SCVPoolFreeNode SCVPoolFreeNode;
+struct SCVPoolFreeNode {
+  SCVPoolFreeNode *next;
+};
+
+typedef struct SCVPool SCVPool;
+struct SCVPool {
+  u8              *buf;
+  u64             len;
+  u64             chunkSize;
+  SCVPoolFreeNode *head;
+};
+
+void 
+scvPoolFreeAll(SCVPool *pool)
+{
+  u64 chunkCount;
+  u64 i;
+
+  chunkCount = pool->len / pool->chunkSize;
+
+  for (i = 0; i < chunkCount; i++) {
+    void *ptr = &pool->buf[i * pool->chunkSize];
+    SCVPoolFreeNode *node = (SCVPoolFreeNode *)ptr;
+    node->next = pool->head;
+    pool->head = node;
+  }
+}
+
+#define scvPoolInitDefault(p, m, size) scvPoolInit((p), (m), (size), SCV_DEFAULT_ALIGNMENT);
+
+void
+scvPoolInit(SCVPool *pool, SCVSlice mem, u64 chunkSize, u64 chunkAlignment)
+{
+  scvAssert(pool);
+  scvAssert(mem.base != nil && mem.cap > 0);
+  uptr initialStart = (uptr)mem.base;
+  uptr start = scvAlignForward(initialStart, chunkAlignment);
+
+  u64 len = mem.cap - (u64)(start - initialStart);
+  chunkSize = (u64)scvAlignForward((uptr)chunkSize, chunkAlignment);
+
+  scvAssert(chunkSize >= sizeof(SCVPoolFreeNode));
+  scvAssert(len >= chunkSize);
+
+  pool->buf = (u8 *)mem.base;
+  pool->len = len;
+  pool->chunkSize = chunkSize;
+  pool->head = nil;
+
+  scvPoolFreeAll(pool);
+}
+
+void*
+scvPoolAlloc(SCVPool *pool)
+{
+  scvAssert(pool);
+  SCVPoolFreeNode *node = pool->head;
+  if (node == nil) {
+    scvAssert(node);
+    return nil;
+  }
+
+  pool->head = pool->head->next;
+
+  return memset(node, 0, pool->chunkSize);
+}
+
+void
+scvPoolFree(SCVPool *pool, void *ptr)
+{
+  SCVPoolFreeNode *node;
+
+  void *start = pool->buf;
+  void *end   = &pool->buf[pool->len];
+  if (ptr == nil) {
+    return;
+  }
+
+  if (!(start <= ptr && ptr < end)) {
+    scvAssert(0);
+    return;
+  }
+
+  node = (SCVPoolFreeNode *)ptr;
+  node->next = pool->head;
+  pool->head = node;
+}
+
+// utf8
+
+typedef i32 rune;
+
+typedef struct SCVUTF8Iterator SCVUTF8Iterator;
+struct SCVUTF8Iterator {
+  u64       index;
+  SCVString str;
+};
+
+SCVUTF8Iterator
+scvUTF8Iterator(SCVString str)
+{
+  SCVUTF8Iterator iterator;
+  iterator.index = 0;
+  iterator.str   = str;
+
+  return iterator;
+}
+
+SCVUTF8Iterator
+scvUTF8IteratorCString(char *str)
+{
+  return scvUTF8Iterator(scvUnsafeCString(str));
+}
+
+bool
+scvUTF8HasNext(SCVUTF8Iterator *iterator)
+{
+  return (iterator->str.len > iterator->index);
+}
+
+
+rune
+scvUTF8GetNext(SCVUTF8Iterator *iterator, SCVError *error)
+{
+  rune result;
+  u64 index = iterator->index;
+  SCVString str = iterator->str;
+  u8 *s = str.base + index;
+  scvAssert(index < str.len);
+  if (s[0] < 0x80) {
+    iterator->index++;
+    result = (rune)s[0];
+  } else if ((s[0] & 0xe0) == 0xc0) {
+    iterator->index += 2;    
+    result = (rune)((s[0] & 0x1f) << 6) |
+             (rune)((s[1] & 0x3f) << 0);
+  } else if ((s[0] & 0xf0) == 0xe0) {
+    iterator->index += 3;
+    result =  ((rune)(s[0] & 0x0f) << 12) |
+              ((rune)(s[1] & 0x3f) <<  6) |
+              ((rune)(s[2] & 0x3f) <<  0);
+  } else if ((s[0] & 0xf8) == 0xf0 && (s[0] <= 0xf4)) {
+    iterator->index += 4;
+    result =  ((rune)(s[0] & 0x07) << 18) |
+              ((rune)(s[1] & 0x3f) << 12) |
+              ((rune)(s[2] & 0x3f) <<  6) |
+              ((rune)(s[3] & 0x3f) <<  0);
+  } else {
+    result = -1;
+    iterator->index++;
+    scvErrorSet(error, "UTF8 incorrect encoding pattern", (uptr)SCV_UTF8_INCORRECT_ENDCODING);
+  }
+  if (result >= 0xd800 && result <= 0xdfff) {
+    scvErrorSet(error, "error while parsing UTF8, found UTF16 surrogate half", (uptr)SCV_UTF8_SURROGATE_HALF_FOUND);
+    result = -1;
+  }
+
+  return result;
+}
+
+
 
 #endif
